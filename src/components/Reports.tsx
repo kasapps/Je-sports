@@ -5,36 +5,19 @@ import {
   DollarSign, 
   ArrowUpRight, 
   ArrowDownRight, 
-  PieChart,
-  Download,
-  Filter,
-  Loader2,
-  ChevronRight,
-  Printer,
-  ShoppingBag,
-  CreditCard,
-  Banknote,
-  Lock,
-  CheckCircle2,
-  X
+  PieChart, 
+  Loader2, 
+  Printer, 
+  ShoppingBag, 
+  CreditCard, 
+  Banknote, 
+  Lock, 
+  CheckCircle2, 
+  X,
+  AlertCircle
 } from 'lucide-react';
 import { formatCurrency, formatDate, cn } from '../lib/utils';
-import { 
-  collection, 
-  query, 
-  where, 
-  onSnapshot, 
-  addDoc, 
-  setDoc,
-  doc, 
-  Timestamp,
-  orderBy,
-  deleteDoc,
-  writeBatch,
-  getDocs,
-  limit
-} from 'firebase/firestore';
-import { db } from '../firebase';
+import { supabase } from '../supabase';
 
 export default function Reports() {
   const getLocalDate = () => new Date().toLocaleDateString('en-CA');
@@ -43,7 +26,7 @@ export default function Reports() {
   const [loading, setLoading] = useState(true);
   const [closingDay, setClosingDay] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [date, setDate] = useState(getLocalDate()); // YYYY-MM-DD local
+  const [date, setDate] = useState(getLocalDate()); // YYYY-MM-DD
   
   // Cash Count State
   const [isCashCountOpen, setIsCashCountOpen] = useState(false);
@@ -58,201 +41,156 @@ export default function Reports() {
   });
   const [savingExpense, setSavingExpense] = useState(false);
 
-  useEffect(() => {
+  const fetchDailyData = async () => {
     setLoading(true);
-    
-    // Create start and end timestamps for the selected date
-    const startOfDay = new Date(date + 'T00:00:00');
-    const endOfDay = new Date(date + 'T23:59:59.999');
-    
-    const startTs = Timestamp.fromDate(startOfDay);
-    const endTs = Timestamp.fromDate(endOfDay);
+    setError(null);
 
-    // Queries
-    const qSales = query(
-      collection(db, 'sales'), 
-      where('status', '==', 'CLOSED'),
-      where('closed_at', '>=', startTs),
-      where('closed_at', '<=', endTs)
-    );
+    try {
+      const startOfDay = `${date}T00:00:00.000Z`;
+      const endOfDay = `${date}T23:59:59.999Z`;
 
-    const qPayments = query(
-      collection(db, 'payments'),
-      where('date', '>=', startTs),
-      where('date', '<=', endTs)
-    );
+      // 1. Fetch Closed Sales
+      const { data: salesData, error: salesErr } = await supabase
+        .from('sales')
+        .select('*')
+        .eq('status', 'CLOSED')
+        .gte('closed_at', startOfDay)
+        .lte('closed_at', endOfDay)
+        .order('closed_at', { ascending: false });
 
-    const qExpenses = query(
-      collection(db, 'expenses'),
-      where('date', '>=', startTs),
-      where('date', '<=', endTs)
-    );
+      if (salesErr) throw salesErr;
+      const salesList = salesData || [];
 
-    const qDebts = query(
-      collection(db, 'debts'),
-      where('created_at', '>=', startTs),
-      where('created_at', '<=', endTs)
-    );
+      // 2. Fetch Payments
+      const { data: paymentsData, error: payErr } = await supabase
+        .from('payments')
+        .select('*')
+        .gte('date', startOfDay)
+        .lte('date', endOfDay);
 
-    const qClosing = query(
-      collection(db, 'daily_closings'),
-      where('date', '==', date)
-    );
+      if (payErr) throw payErr;
+      const paymentsList = paymentsData || [];
 
-    const qOpenSales = query(
-      collection(db, 'sales'),
-      where('status', '==', 'OPEN')
-    );
+      // 3. Fetch Expenses
+      const { data: expensesData, error: expErr } = await supabase
+        .from('expenses')
+        .select('*')
+        .gte('date', startOfDay)
+        .lte('date', endOfDay)
+        .order('date', { ascending: false });
 
-    // Sync listeners
-    const unsubSales = onSnapshot(qSales, (snapshot) => {
-      const sales = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-      updateSummaryPart('salesList', sales);
-    });
+      if (expErr) throw expErr;
+      const expensesList = expensesData || [];
 
-    const unsubPayments = onSnapshot(qPayments, (snapshot) => {
-      const payments = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-      updateSummaryPart('paymentsList', payments);
-    });
+      // 4. Fetch Debts Generated
+      const { data: debtsData, error: debtsErr } = await supabase
+        .from('debts')
+        .select('*')
+        .gte('created_at', startOfDay)
+        .lte('created_at', endOfDay);
 
-    const unsubExpenses = onSnapshot(qExpenses, (snapshot) => {
-      const expenses = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-      updateSummaryPart('expensesList', expenses);
-    });
+      if (debtsErr) throw debtsErr;
+      const debtsList = debtsData || [];
 
-    const unsubDebts = onSnapshot(qDebts, (snapshot) => {
-      const debts = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
-      updateSummaryPart('debtsList', debts);
-    });
+      // 5. Fetch Daily Closing for this date
+      const { data: closingData, error: closErr } = await supabase
+        .from('daily_closings')
+        .select('*')
+        .eq('date', date)
+        .maybeSingle();
 
-    const unsubClosing = onSnapshot(qClosing, (snapshot) => {
-      const closing = snapshot.docs.length > 0 ? snapshot.docs[0].data() : null;
-      updateSummaryPart('closing', closing);
-    });
+      if (closErr && closErr.code !== 'PGRST116') throw closErr;
 
-    const unsubOpenSales = onSnapshot(qOpenSales, (snapshot) => {
-      updateSummaryPart('openSalesCount', snapshot.docs.length);
-    });
+      // 6. Check open sales count
+      const { count: openSalesCount, error: openErr } = await supabase
+        .from('sales')
+        .select('*', { count: 'exact', head: true })
+        .eq('status', 'OPEN');
 
-    return () => {
-      unsubSales();
-      unsubPayments();
-      unsubExpenses();
-      unsubDebts();
-      unsubClosing();
-      unsubOpenSales();
-    };
-  }, [date]);
+      if (openErr) throw openErr;
 
-  const [summaryParts, setSummaryParts] = useState<any>({
-    salesList: [],
-    paymentsList: [],
-    expensesList: [],
-    debtsList: [],
-    closing: null,
-    openSalesCount: 0
-  });
+      // Aggregations
+      const totalSold = salesList.reduce((acc: number, s: any) => acc + (Number(s.total) || 0), 0);
+      const totalCost = salesList.reduce((acc: number, s: any) => {
+        const items = Array.isArray(s.items) ? s.items : [];
+        const itemsCost = items.reduce((iAcc: number, item: any) => iAcc + ((Number(item.cost_price) || Number(item.cost) || 0) * (Number(item.quantity) || 1)), 0);
+        return acc + itemsCost;
+      }, 0);
 
-  const updateSummaryPart = (key: string, value: any) => {
-    setSummaryParts((prev: any) => ({ ...prev, [key]: value }));
+      const grossProfit = totalSold - totalCost;
+
+      const paymentsByMethod = [
+        { method: 'CASH', total: paymentsList.filter((p: any) => p.method === 'CASH').reduce((acc: number, p: any) => acc + Number(p.amount), 0) },
+        { method: 'CARD', total: paymentsList.filter((p: any) => p.method === 'CARD').reduce((acc: number, p: any) => acc + Number(p.amount), 0) },
+        { method: 'TRANSFER', total: paymentsList.filter((p: any) => p.method === 'TRANSFER').reduce((acc: number, p: any) => acc + Number(p.amount), 0) }
+      ];
+
+      const totalExpenses = expensesList.reduce((acc: number, e: any) => acc + Number(e.amount), 0);
+      const debtsGenerated = debtsList.reduce((acc: number, d: any) => acc + Number(d.total_amount), 0);
+
+      setSummary({
+        isClosed: Boolean(closingData),
+        expectedCash: closingData?.expected_cash || 0,
+        physicalCash: closingData?.physical_cash || 0,
+        discrepancy: closingData?.discrepancy || 0,
+        sales: {
+          total_sold: totalSold,
+          count: salesList.length
+        },
+        grossProfit,
+        payments: paymentsByMethod,
+        expenses: totalExpenses,
+        debtsGenerated,
+        salesList,
+        expensesList,
+        openSalesCount: openSalesCount || 0
+      });
+    } catch (err: any) {
+      console.error('Error fetching daily report data:', err);
+      setError(err.message || 'Error al obtener reportes');
+    } finally {
+      setLoading(false);
+    }
   };
 
   useEffect(() => {
-    // Aggregate data whenever parts change
-    const { salesList, paymentsList, expensesList, debtsList, closing, openSalesCount } = summaryParts;
-    
-    const totalSold = salesList.reduce((acc: number, s: any) => acc + (s.total || 0), 0);
-    const totalCost = salesList.reduce((acc: number, s: any) => {
-      const itemsCost = (s.items || []).reduce((iAcc: number, item: any) => iAcc + (item.cost_price * item.quantity), 0);
-      return acc + itemsCost;
-    }, 0);
-    
-    const grossProfit = totalSold - totalCost;
-    
-    const paymentsByMethod = [
-      { method: 'CASH', total: paymentsList.filter((p: any) => p.method === 'CASH').reduce((acc: number, p: any) => acc + p.amount, 0) },
-      { method: 'CARD', total: paymentsList.filter((p: any) => p.method === 'CARD').reduce((acc: number, p: any) => acc + p.amount, 0) },
-      { method: 'TRANSFER', total: paymentsList.filter((p: any) => p.method === 'TRANSFER').reduce((acc: number, p: any) => acc + p.amount, 0) }
-    ];
+    fetchDailyData();
 
-    const totalExpenses = expensesList.reduce((acc: number, e: any) => acc + e.amount, 0);
-    const debtsGenerated = debtsList.reduce((acc: number, d: any) => acc + d.total_amount, 0);
+    const channel = supabase
+      .channel('reports_realtime')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'sales' }, () => fetchDailyData())
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'payments' }, () => fetchDailyData())
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'expenses' }, () => fetchDailyData())
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'daily_closings' }, () => fetchDailyData())
+      .subscribe();
 
-    setSummary({
-      isClosed: !!closing,
-      expectedCash: closing?.expected_cash || 0,
-      physicalCash: closing?.physical_cash || 0,
-      discrepancy: closing?.discrepancy || 0,
-      sales: {
-        total_sold: totalSold,
-        count: salesList.length
-      },
-      grossProfit,
-      payments: paymentsByMethod,
-      expenses: totalExpenses,
-      debtsGenerated,
-      salesList,
-      expensesList,
-      openSalesCount
-    });
-    setLoading(false);
-  }, [summaryParts]);
+    return () => {
+      supabase.removeChannel(channel);
+    };
+  }, [date]);
 
   const expectedCash = summary ? (summary.payments.find((p: any) => p.method === 'CASH')?.total || 0) - (summary.expenses || 0) : 0;
 
   const handleDeleteSale = async (saleId: string) => {
-    if (!window.confirm('¿Estás seguro de borrar esta venta? Esto revertirá el stock.')) return;
+    if (!window.confirm('¿Estás seguro de cancelar esta venta? Esto revertirá automáticamente el inventario.')) return;
     
     try {
-      // We need to revert stock too.
-      const saleRef = doc(db, 'sales', saleId);
-      const saleSnap = await getDocs(query(collection(db, 'sales'), where('__name__', '==', saleId)));
-      if (saleSnap.empty) return;
-      
-      const saleData = saleSnap.docs[0].data();
-      const batch = writeBatch(db);
-      
-      // Revert stock
-      for (const item of (saleData.items || [])) {
-        const productRef = doc(db, 'products', item.id);
-        batch.update(productRef, {
-          stock: item.quantity // This is tricky because we don't know if it was incremented or decremented.
-          // Actually, we should use increment(item.quantity)
-        });
-        
-        // Add inventory movement for reversal
-        const movementRef = doc(collection(db, 'inventory_movements'));
-        batch.set(movementRef, {
-          product_id: item.id,
-          product_name: item.name,
-          type: 'IN',
-          quantity: item.quantity,
-          reason: `Venta #${saleId} eliminada`,
-          date: Timestamp.now()
-        });
-      }
-      
-      batch.delete(saleRef);
-      
-      // Also delete related payments and debts if any
-      const paymentsQuery = query(collection(db, 'payments'), where('sale_id', '==', saleId));
-      const paymentsSnap = await getDocs(paymentsQuery);
-      paymentsSnap.forEach(d => batch.delete(d.ref));
-      
-      const debtsQuery = query(collection(db, 'debts'), where('sale_id', '==', saleId));
-      const debtsSnap = await getDocs(debtsQuery);
-      debtsSnap.forEach(d => batch.delete(d.ref));
+      // Uso de función RPC atómica en PostgreSQL
+      const { error } = await supabase.rpc('cancel_sale_rpc', {
+        p_sale_id: saleId
+      });
 
-      await batch.commit();
+      if (error) throw error;
+      await fetchDailyData();
     } catch (err: any) {
-      console.error(err);
+      console.error('Error cancelling sale:', err);
       alert('Error: ' + err.message);
     }
   };
 
-  const handleDailyClosing = async () => {
+  const handleDailyClosing = () => {
     if (summary?.openSalesCount > 0) {
-      alert(`No se puede realizar el corte porque hay ${summary.openSalesCount} ventas abiertas. Por favor, ciérralas o cancélalas primero.`);
+      alert(`No se puede realizar el corte porque hay ${summary.openSalesCount} ventas abiertas en el POS. Por favor, ciérralas o elimínalas primero.`);
       return;
     }
     
@@ -266,17 +204,25 @@ export default function Reports() {
 
     setSavingExpense(true);
     try {
-      await addDoc(collection(db, 'expenses'), {
-        description: expenseForm.description,
-        amount: parseFloat(expenseForm.amount),
-        category: expenseForm.category,
-        date: Timestamp.now()
-      });
+      const { data: userData } = await supabase.auth.getUser();
+
+      const { error } = await supabase
+        .from('expenses')
+        .insert({
+          description: expenseForm.description.trim(),
+          amount: parseFloat(expenseForm.amount),
+          category: expenseForm.category,
+          date: new Date().toISOString(),
+          registered_by: userData?.user?.id || null
+        });
+
+      if (error) throw error;
       
       setIsExpenseModalOpen(false);
       setExpenseForm({ description: '', amount: '', category: 'General' });
+      await fetchDailyData();
     } catch (err: any) {
-      alert(err.message);
+      alert('Error al registrar gasto: ' + err.message);
     } finally {
       setSavingExpense(false);
     }
@@ -287,32 +233,37 @@ export default function Reports() {
     const discrepancy = physicalAmount - expectedCash;
 
     const confirmMsg = discrepancy === 0 
-      ? 'El monto coincide perfectamente. ¿Deseas proceder con el cierre?'
-      : `Hay una diferencia de ${formatCurrency(discrepancy)}. ¿Deseas proceder con el cierre de todas formas?`;
+      ? 'El efectivo físico coincide con el sistema ($0.00 de diferencia). ¿Confirmar cierre de caja?' 
+      : `Existe una diferencia de ${formatCurrency(discrepancy)} (${discrepancy > 0 ? 'sobrante' : 'faltante'}). ¿Deseas confirmar el corte de caja?`;
 
     if (!window.confirm(confirmMsg)) return;
     
     setClosingDay(true);
-    setError(null);
     try {
-      const closingRef = doc(db, 'daily_closings', date);
-      await setDoc(closingRef, {
-        date,
-        expected_cash: expectedCash,
-        physical_cash: physicalAmount,
-        discrepancy: discrepancy,
-        closed_at: Timestamp.now(),
-        total_sales: summary.sales.total_sold,
-        gross_profit: summary.grossProfit,
-        expenses: summary.expenses
-      });
+      const { data: userData } = await supabase.auth.getUser();
+
+      const { error } = await supabase
+        .from('daily_closings')
+        .upsert({
+          date,
+          expected_cash: expectedCash,
+          physical_cash: physicalAmount,
+          discrepancy: discrepancy,
+          closed_at: new Date().toISOString(),
+          total_sales: summary.sales.total_sold,
+          gross_profit: summary.grossProfit,
+          expenses: summary.expenses,
+          closed_by: userData?.user?.id || null
+        }, { onConflict: 'date' });
+
+      if (error) throw error;
       
       setIsCashCountOpen(false);
-      alert('Corte de caja realizado con éxito.');
+      alert('Corte de caja realizado con éxito en Supabase.');
+      await fetchDailyData();
     } catch (err: any) {
       console.error(err);
       alert('Error: ' + err.message);
-      setError(err.message);
     } finally {
       setClosingDay(false);
     }
@@ -331,14 +282,14 @@ export default function Reports() {
       <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
         <div>
           <h2 className="text-2xl font-bold text-gray-800">Cierre y Reportes</h2>
-          <p className="text-gray-500">Resumen financiero detallado</p>
+          <p className="text-gray-500">Resumen financiero diario y arqueo de caja</p>
         </div>
         <div className="flex items-center gap-3">
           {summary && !summary.isClosed && date === getLocalDate() && (
             <>
               <button 
                 onClick={() => setIsExpenseModalOpen(true)}
-                className="flex items-center gap-2 px-6 py-3 bg-white text-red-600 border border-red-100 rounded-2xl font-bold hover:bg-red-50 transition-all shadow-sm"
+                className="flex items-center gap-2 px-6 py-3 bg-white text-red-600 border border-red-100 rounded-2xl font-bold hover:bg-red-50 transition-all shadow-sm text-sm"
               >
                 <ArrowDownRight className="w-5 h-5" />
                 Registrar Gasto
@@ -346,7 +297,7 @@ export default function Reports() {
               <button 
                 onClick={handleDailyClosing}
                 disabled={closingDay}
-                className="flex items-center gap-2 px-6 py-3 bg-emerald-600 text-white rounded-2xl font-bold hover:bg-emerald-700 transition-all shadow-lg shadow-emerald-600/20 disabled:opacity-50"
+                className="flex items-center gap-2 px-6 py-3 bg-emerald-600 text-white rounded-2xl font-bold hover:bg-emerald-700 transition-all shadow-lg shadow-emerald-600/20 disabled:opacity-50 text-sm"
               >
                 {closingDay ? <Loader2 className="w-5 h-5 animate-spin" /> : <Lock className="w-5 h-5" />}
                 Realizar Corte
@@ -354,7 +305,7 @@ export default function Reports() {
             </>
           )}
           {summary?.isClosed && (
-            <div className="flex items-center gap-2 px-6 py-3 bg-gray-100 text-gray-500 rounded-2xl font-bold border border-gray-200">
+            <div className="flex items-center gap-2 px-6 py-3 bg-gray-100 text-gray-500 rounded-2xl font-bold border border-gray-200 text-sm">
               <CheckCircle2 className="w-5 h-5 text-emerald-500" />
               Día Cerrado
             </div>
@@ -365,18 +316,29 @@ export default function Reports() {
               type="date"
               value={date}
               onChange={(e) => setDate(e.target.value)}
-              className="pl-12 pr-4 py-3 bg-white border border-gray-200 rounded-2xl shadow-sm outline-none focus:ring-2 focus:ring-emerald-500"
+              className="pl-12 pr-4 py-3 bg-white border border-gray-200 rounded-2xl shadow-sm outline-none focus:ring-2 focus:ring-emerald-500 text-sm"
             />
           </div>
-          <button className="p-3 bg-white border border-gray-200 rounded-2xl hover:bg-gray-50 transition-colors shadow-sm">
+          <button 
+            onClick={() => window.print()}
+            className="p-3 bg-white border border-gray-200 rounded-2xl hover:bg-gray-50 transition-colors shadow-sm"
+            title="Imprimir resumen"
+          >
             <Printer className="w-5 h-5 text-gray-600" />
           </button>
         </div>
       </div>
 
+      {error && (
+        <div className="p-4 bg-red-50 text-red-600 rounded-2xl text-sm border border-red-100 flex items-center gap-2">
+          <AlertCircle className="w-5 h-5 shrink-0" />
+          <span>{error}</span>
+        </div>
+      )}
+
       {summary && (
         <>
-          {/* Cash Count Results if Closed */}
+          {/* Resultados de Arqueo de Caja si está cerrado */}
           {summary.isClosed && (
             <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8">
               <div className="bg-gray-50 p-6 rounded-3xl border border-gray-100">
@@ -384,7 +346,7 @@ export default function Reports() {
                 <p className="text-2xl font-black text-gray-800">{formatCurrency(summary.expectedCash)}</p>
               </div>
               <div className="bg-gray-50 p-6 rounded-3xl border border-gray-100">
-                <p className="text-xs text-gray-400 font-bold uppercase mb-1">Efectivo Físico</p>
+                <p className="text-xs text-gray-400 font-bold uppercase mb-1">Efectivo Físico Contado</p>
                 <p className="text-2xl font-black text-gray-800">{formatCurrency(summary.physicalCash)}</p>
               </div>
               <div className={cn(
@@ -406,7 +368,7 @@ export default function Reports() {
             </div>
           )}
 
-          {/* Main Stats */}
+          {/* Estadísticas Principales */}
           <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
             <div className="bg-emerald-600 p-8 rounded-[2rem] text-white shadow-xl shadow-emerald-600/20 relative overflow-hidden">
               <TrendingUp className="absolute right-[-10px] bottom-[-10px] w-32 h-32 opacity-10" />
@@ -434,12 +396,12 @@ export default function Reports() {
                 <p className="text-gray-400 text-sm font-bold uppercase tracking-wider mb-2">Reinversión (20%)</p>
                 <h3 className="text-4xl font-black text-blue-600 mb-4">{formatCurrency(summary.sales.total_sold * 0.2)}</h3>
               </div>
-              <p className="text-xs text-gray-400">Dinero sugerido para reposición de stock</p>
+              <p className="text-xs text-gray-400">Fondo sugerido para reposición de stock</p>
             </div>
           </div>
 
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-            {/* Payment Methods */}
+            {/* Desglose de Métodos de Pago */}
             <div className="bg-white p-8 rounded-[2rem] border border-gray-100 shadow-sm">
               <h3 className="text-lg font-bold mb-6 flex items-center gap-2">
                 <CreditCard className="w-5 h-5 text-emerald-500" />
@@ -479,7 +441,7 @@ export default function Reports() {
               </div>
             </div>
 
-            {/* Other Metrics */}
+            {/* Otros Movimientos */}
             <div className="bg-white p-8 rounded-[2rem] border border-gray-100 shadow-sm">
               <h3 className="text-lg font-bold mb-6 flex items-center gap-2">
                 <PieChart className="w-5 h-5 text-blue-500" />
@@ -496,7 +458,7 @@ export default function Reports() {
                 </div>
                 <div className="p-6 bg-gray-50 rounded-3xl col-span-2 flex items-center justify-between">
                   <div>
-                    <p className="text-xs text-gray-400 font-bold uppercase mb-1">Ingreso Neto (Efectivo en Caja)</p>
+                    <p className="text-xs text-gray-400 font-bold uppercase mb-1">Efectivo Neto Esperado en Caja</p>
                     <p className="text-2xl font-black text-gray-800">
                       {formatCurrency((summary.payments.find((p: any) => p.method === 'CASH')?.total || 0) - summary.expenses)}
                     </p>
@@ -509,44 +471,25 @@ export default function Reports() {
             </div>
           </div>
 
-          {/* Sales & Expenses Lists */}
+          {/* Listados de Ventas y Gastos */}
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
-            {/* Sales List */}
+            {/* Listado de Ventas */}
             <div className="bg-white p-8 rounded-[2rem] border border-gray-100 shadow-sm">
               <div className="flex justify-between items-center mb-6">
                 <h3 className="text-lg font-bold flex items-center gap-2">
                   <ShoppingBag className="w-5 h-5 text-emerald-500" />
                   Ventas del Día
                 </h3>
-                <div className="flex items-center gap-2">
-                  <div className="relative">
-                    <input 
-                      type="text" 
-                      placeholder="Borrar ID..." 
-                      className="pl-3 pr-10 py-2 bg-gray-50 border border-gray-100 rounded-xl text-xs focus:ring-2 focus:ring-red-500 outline-none w-32"
-                      onKeyDown={(e) => {
-                        if (e.key === 'Enter') {
-                          const id = (e.target as HTMLInputElement).value;
-                          if (id) {
-                            handleDeleteSale(id);
-                            (e.target as HTMLInputElement).value = '';
-                          }
-                        }
-                      }}
-                    />
-                    <X className="w-3 h-3 text-gray-400 absolute right-3 top-1/2 -translate-y-1/2" />
-                  </div>
-                </div>
               </div>
               <div className="overflow-x-auto">
                 <table className="w-full">
                   <thead>
-                    <tr className="text-left text-xs font-bold text-gray-400 uppercase tracking-wider">
+                    <tr className="text-left text-xs font-bold text-gray-400 uppercase tracking-wider border-b border-gray-50">
                       <th className="pb-4 px-4">ID</th>
                       <th className="pb-4 px-4">Hora</th>
                       <th className="pb-4 px-4">Cliente</th>
                       <th className="pb-4 px-4">Total</th>
-                      <th className="pb-4 px-4 text-right">Acciones</th>
+                      <th className="pb-4 px-4 text-right">Acción</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-gray-50">
@@ -558,22 +501,24 @@ export default function Reports() {
                         <td className="py-4 px-4 font-bold">
                           #{sale.id.slice(-4)}
                           {sale.status === 'CANCELLED' && (
-                            <span className="ml-2 text-[10px] font-black bg-red-100 text-red-600 px-2 py-0.5 rounded-full uppercase tracking-tighter">Cancelada</span>
+                            <span className="ml-2 text-[10px] font-black bg-red-100 text-red-600 px-2 py-0.5 rounded-full uppercase">Cancelada</span>
                           )}
                         </td>
-                        <td className="py-4 px-4">{sale.closed_at?.toDate().toLocaleTimeString()}</td>
+                        <td className="py-4 px-4">{new Date(sale.closed_at || sale.created_at).toLocaleTimeString()}</td>
                         <td className="py-4 px-4">{sale.customer_name || 'Venta General'}</td>
                         <td className={cn("py-4 px-4 font-black", sale.status === 'CANCELLED' && "line-through")}>
                           {formatCurrency(sale.total)}
                         </td>
                         <td className="py-4 px-4 text-right">
-                          <button 
-                            onClick={() => handleDeleteSale(sale.id)}
-                            className="p-2 text-red-600 hover:bg-red-50 rounded-xl transition-colors group"
-                            title="Borrar Venta"
-                          >
-                            <X className="w-5 h-5 group-hover:scale-110 transition-transform" />
-                          </button>
+                          {sale.status !== 'CANCELLED' && !summary.isClosed && (
+                            <button 
+                              onClick={() => handleDeleteSale(sale.id)}
+                              className="p-2 text-red-500 hover:bg-red-50 rounded-xl transition-colors"
+                              title="Cancelar Venta"
+                            >
+                              <X className="w-4 h-4" />
+                            </button>
+                          )}
                         </td>
                       </tr>
                     ))}
@@ -590,7 +535,7 @@ export default function Reports() {
               </div>
             </div>
 
-            {/* Expenses List */}
+            {/* Listado de Gastos */}
             <div className="bg-white p-8 rounded-[2rem] border border-gray-100 shadow-sm">
               <h3 className="text-lg font-bold mb-6 flex items-center gap-2">
                 <ArrowDownRight className="w-5 h-5 text-red-500" />
@@ -599,7 +544,7 @@ export default function Reports() {
               <div className="overflow-x-auto">
                 <table className="w-full">
                   <thead>
-                    <tr className="text-left text-xs font-bold text-gray-400 uppercase tracking-wider">
+                    <tr className="text-left text-xs font-bold text-gray-400 uppercase tracking-wider border-b border-gray-50">
                       <th className="pb-4 px-4">Descripción</th>
                       <th className="pb-4 px-4">Categoría</th>
                       <th className="pb-4 px-4 text-right">Monto</th>
@@ -634,17 +579,18 @@ export default function Reports() {
           </div>
         </>
       )}
-      {/* Expense Modal */}
+
+      {/* Modal Registrar Gasto */}
       {isExpenseModalOpen && (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-in fade-in duration-300">
-          <div className="bg-white w-full max-w-md rounded-[2.5rem] shadow-2xl overflow-hidden animate-in zoom-in duration-300">
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs">
+          <div className="bg-white w-full max-w-md rounded-[2.5rem] shadow-2xl overflow-hidden">
             <form onSubmit={handleSaveExpense}>
               <div className="p-8 border-b border-gray-50">
                 <div className="w-16 h-16 bg-red-50 text-red-600 rounded-2xl flex items-center justify-center mb-6">
                   <ArrowDownRight className="w-8 h-8" />
                 </div>
                 <h3 className="text-2xl font-black text-gray-800">Registrar Gasto</h3>
-                <p className="text-gray-500 mt-2">Ingresa los detalles de la salida de efectivo.</p>
+                <p className="text-gray-500 mt-2 text-sm">Ingresa los detalles de la salida de efectivo.</p>
               </div>
               
               <div className="p-8 space-y-4">
@@ -654,16 +600,16 @@ export default function Reports() {
                     required
                     autoFocus
                     type="text"
-                    placeholder="Ej. Pago de luz, Compra de insumos..."
+                    placeholder="Ej. Pago de luz, bolsas, insumos..."
                     value={expenseForm.description}
                     onChange={(e) => setExpenseForm({ ...expenseForm, description: e.target.value })}
-                    className="w-full px-4 py-4 bg-white border border-gray-200 rounded-2xl outline-none focus:ring-2 focus:ring-red-500"
+                    className="w-full px-4 py-4 bg-white border border-gray-200 rounded-2xl outline-none focus:ring-2 focus:ring-red-500 text-sm"
                   />
                 </div>
 
                 <div className="grid grid-cols-2 gap-4">
                   <div className="space-y-2">
-                    <label className="text-xs font-bold text-gray-400 uppercase ml-1">Monto</label>
+                    <label className="text-xs font-bold text-gray-400 uppercase ml-1">Monto ($)</label>
                     <div className="relative">
                       <DollarSign className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-gray-400" />
                       <input
@@ -673,7 +619,7 @@ export default function Reports() {
                         placeholder="0.00"
                         value={expenseForm.amount}
                         onChange={(e) => setExpenseForm({ ...expenseForm, amount: e.target.value })}
-                        className="w-full pl-12 pr-4 py-4 bg-white border border-gray-200 rounded-2xl outline-none focus:ring-2 focus:ring-red-500"
+                        className="w-full pl-12 pr-4 py-4 bg-white border border-gray-200 rounded-2xl outline-none focus:ring-2 focus:ring-red-500 text-sm font-bold"
                       />
                     </div>
                   </div>
@@ -682,7 +628,7 @@ export default function Reports() {
                     <select
                       value={expenseForm.category}
                       onChange={(e) => setExpenseForm({ ...expenseForm, category: e.target.value })}
-                      className="w-full px-4 py-4 bg-white border border-gray-200 rounded-2xl outline-none focus:ring-2 focus:ring-red-500 appearance-none"
+                      className="w-full px-4 py-4 bg-white border border-gray-200 rounded-2xl outline-none focus:ring-2 focus:ring-red-500 text-sm"
                     >
                       <option value="General">General</option>
                       <option value="Servicios">Servicios</option>
@@ -698,14 +644,14 @@ export default function Reports() {
                 <button
                   type="button"
                   onClick={() => setIsExpenseModalOpen(false)}
-                  className="flex-1 py-4 bg-white text-gray-500 rounded-2xl font-bold hover:bg-gray-100 transition-all border border-gray-200"
+                  className="flex-1 py-4 bg-white text-gray-500 rounded-2xl font-bold hover:bg-gray-100 transition-all border border-gray-200 text-sm"
                 >
                   Cancelar
                 </button>
                 <button
                   type="submit"
                   disabled={savingExpense}
-                  className="flex-2 py-4 bg-red-600 text-white rounded-2xl font-bold shadow-lg shadow-red-600/20 hover:bg-red-700 transition-all flex items-center justify-center gap-2 disabled:opacity-50"
+                  className="flex-2 py-4 bg-red-600 text-white rounded-2xl font-bold shadow-lg shadow-red-600/20 hover:bg-red-700 transition-all flex items-center justify-center gap-2 disabled:opacity-50 text-sm"
                 >
                   {savingExpense ? <Loader2 className="w-5 h-5 animate-spin" /> : <DollarSign className="w-5 h-5" />}
                   Guardar Gasto
@@ -716,16 +662,16 @@ export default function Reports() {
         </div>
       )}
 
-      {/* Cash Count Modal */}
+      {/* Modal Arqueo de Caja */}
       {isCashCountOpen && (
-        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-in fade-in duration-300">
-          <div className="bg-white w-full max-w-md rounded-[2.5rem] shadow-2xl overflow-hidden animate-in zoom-in duration-300">
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-xs">
+          <div className="bg-white w-full max-w-md rounded-[2.5rem] shadow-2xl overflow-hidden">
             <div className="p-8 border-b border-gray-50">
               <div className="w-16 h-16 bg-emerald-50 text-emerald-600 rounded-2xl flex items-center justify-center mb-6">
                 <Banknote className="w-8 h-8" />
               </div>
               <h3 className="text-2xl font-black text-gray-800">Arqueo de Caja</h3>
-              <p className="text-gray-500 mt-2">Ingresa el monto de dinero físico que tienes en caja para compararlo con el sistema.</p>
+              <p className="text-gray-500 mt-2 text-sm">Ingresa el dinero físico en efectivo contado en caja.</p>
             </div>
             
             <div className="p-8 space-y-6">
@@ -765,14 +711,14 @@ export default function Reports() {
             <div className="p-8 bg-gray-50 flex gap-3">
               <button
                 onClick={() => setIsCashCountOpen(false)}
-                className="flex-1 py-4 bg-white text-gray-500 rounded-2xl font-bold hover:bg-gray-100 transition-all border border-gray-200"
+                className="flex-1 py-4 bg-white text-gray-500 rounded-2xl font-bold hover:bg-gray-100 transition-all border border-gray-200 text-sm"
               >
                 Cancelar
               </button>
               <button
                 onClick={confirmClosingWithCash}
                 disabled={closingDay || !physicalCash}
-                className="flex-2 py-4 bg-emerald-600 text-white rounded-2xl font-bold shadow-lg shadow-emerald-600/20 hover:bg-emerald-700 transition-all flex items-center justify-center gap-2 disabled:opacity-50"
+                className="flex-2 py-4 bg-emerald-600 text-white rounded-2xl font-bold shadow-lg shadow-emerald-600/20 hover:bg-emerald-700 transition-all flex items-center justify-center gap-2 disabled:opacity-50 text-sm"
               >
                 {closingDay ? <Loader2 className="w-5 h-5 animate-spin" /> : <Lock className="w-5 h-5" />}
                 Confirmar Corte

@@ -51,7 +51,7 @@ service cloud.firestore {
     // ===============================================================
     match /users/{userId} {
       allow read: if isOwner(userId) || isAdmin();
-      allow create, update: if isAdmin();
+      allow create, update: if isOwner(userId) || isAdmin();
     }
 
     match /customers/{customerId} {

@@ -7,35 +7,18 @@ import {
   User, 
   CreditCard, 
   Banknote, 
-  ArrowRight,
-  ShoppingCart,
-  X,
-  PlusCircle,
-  Loader2,
-  Tag,
-  Package,
-  Lock
+  ArrowRight, 
+  ShoppingCart, 
+  X, 
+  PlusCircle, 
+  Loader2, 
+  Tag, 
+  Package, 
+  Lock 
 } from 'lucide-react';
 import { Product, Customer, Sale, SaleItem } from '../types';
 import { formatCurrency, cn } from '../lib/utils';
-import { 
-  collection, 
-  onSnapshot, 
-  query, 
-  where, 
-  orderBy, 
-  addDoc, 
-  updateDoc, 
-  deleteDoc, 
-  doc, 
-  getDoc,
-  getDocs,
-  serverTimestamp,
-  increment,
-  writeBatch,
-  limit
-} from 'firebase/firestore';
-import { db, auth } from '../firebase';
+import { supabase } from '../supabase';
 
 export default function POS() {
   const [openSales, setOpenSales] = useState<Sale[]>([]);
@@ -49,67 +32,132 @@ export default function POS() {
   const [isDayClosed, setIsDayClosed] = useState(false);
   const [lastSale, setLastSale] = useState<Sale | null>(null);
   const [loading, setLoading] = useState(true);
+  const [processingCheckout, setProcessingCheckout] = useState(false);
 
   // Checkout state
   const [paymentMethod, setPaymentMethod] = useState<'CASH' | 'CARD' | 'TRANSFER'>('CASH');
   const [amountPaid, setAmountPaid] = useState('');
   const [discount, setDiscount] = useState('0');
 
-  useEffect(() => {
-    // Listen for products
-    const qProducts = query(collection(db, 'products'), where('active', '==', true));
-    const unsubscribeProducts = onSnapshot(qProducts, (snapshot) => {
-      setProducts(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Product)));
-    });
+  const fetchProducts = async () => {
+    try {
+      const { data } = await supabase
+        .from('products')
+        .select('*')
+        .eq('active', true)
+        .order('name', { ascending: true });
+      setProducts((data || []) as Product[]);
+    } catch (e) {
+      console.error('Error fetching products:', e);
+    }
+  };
 
-    // Listen for customers
-    const qCustomers = query(collection(db, 'customers'), orderBy('name'));
-    const unsubscribeCustomers = onSnapshot(qCustomers, (snapshot) => {
-      setCustomers(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Customer)));
-    });
+  const fetchCustomers = async () => {
+    try {
+      const { data } = await supabase
+        .from('customers')
+        .select('*')
+        .order('name', { ascending: true });
+      setCustomers((data || []) as Customer[]);
+    } catch (e) {
+      console.error('Error fetching customers:', e);
+    }
+  };
 
-    // Listen for open sales
-    const qOpenSales = query(collection(db, 'sales'), where('status', '==', 'OPEN'), orderBy('created_at', 'desc'));
-    const unsubscribeOpenSales = onSnapshot(qOpenSales, (snapshot) => {
-      const sales = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() } as Sale));
+  const fetchOpenSales = async () => {
+    try {
+      const { data } = await supabase
+        .from('sales')
+        .select('*')
+        .eq('status', 'OPEN')
+        .order('created_at', { ascending: false });
+      
+      const sales = (data || []).map(s => ({
+        ...s,
+        items: Array.isArray(s.items) ? s.items : []
+      })) as Sale[];
+
       setOpenSales(sales);
+      if (sales.length > 0 && !activeSaleId) {
+        setActiveSaleId(sales[0].id);
+      }
+    } catch (e) {
+      console.error('Error fetching open sales:', e);
+    } finally {
       setLoading(false);
-    });
+    }
+  };
 
-    // Listen for last closed sale
-    const qLastSale = query(
-      collection(db, 'sales'), 
-      where('status', '==', 'CLOSED'), 
-      orderBy('closed_at', 'desc'), 
-      limit(1)
-    );
-    const unsubscribeLastSale = onSnapshot(qLastSale, (snapshot) => {
-      if (!snapshot.empty) {
-        setLastSale({ id: snapshot.docs[0].id, ...snapshot.docs[0].data() } as Sale);
+  const fetchLastClosedSale = async () => {
+    try {
+      const { data } = await supabase
+        .from('sales')
+        .select('*')
+        .eq('status', 'CLOSED')
+        .order('closed_at', { ascending: false })
+        .limit(1);
+
+      if (data && data.length > 0) {
+        setLastSale(data[0] as Sale);
       } else {
         setLastSale(null);
       }
-    });
+    } catch (e) {
+      console.error('Error fetching last sale:', e);
+    }
+  };
 
-    // Check if day is closed
-    const today = new Date().toISOString().split('T')[0];
-    const qClosing = query(collection(db, 'daily_closings'), where('date', '==', today));
-    const unsubscribeClosing = onSnapshot(qClosing, (snapshot) => {
-      setIsDayClosed(!snapshot.empty);
-    });
+  const checkDayClosing = async () => {
+    try {
+      const today = new Date().toISOString().split('T')[0];
+      const { data } = await supabase
+        .from('daily_closings')
+        .select('id')
+        .eq('date', today);
+
+      setIsDayClosed(Boolean(data && data.length > 0));
+    } catch (e) {
+      console.error('Error checking daily closing:', e);
+    }
+  };
+
+  useEffect(() => {
+    Promise.all([
+      fetchProducts(),
+      fetchCustomers(),
+      fetchOpenSales(),
+      fetchLastClosedSale(),
+      checkDayClosing()
+    ]);
+
+    // Realtime channel subscriptions
+    const channel = supabase
+      .channel('pos_realtime')
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'sales' }, () => {
+        fetchOpenSales();
+        fetchLastClosedSale();
+      })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'products' }, () => {
+        fetchProducts();
+      })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'customers' }, () => {
+        fetchCustomers();
+      })
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'daily_closings' }, () => {
+        checkDayClosing();
+      })
+      .subscribe();
 
     return () => {
-      unsubscribeProducts();
-      unsubscribeCustomers();
-      unsubscribeOpenSales();
-      unsubscribeLastSale();
-      unsubscribeClosing();
+      supabase.removeChannel(channel);
     };
   }, []);
 
   const createNewSale = async (customerId?: string) => {
     try {
       const customer = customerId ? customers.find(c => c.id === customerId) : null;
+      const { data: userData } = await supabase.auth.getUser();
+
       const newSale = {
         customer_id: customerId || null,
         customer_name: customer ? customer.name : 'Público General',
@@ -118,10 +166,21 @@ export default function POS() {
         discount: 0,
         status: 'OPEN',
         created_at: new Date().toISOString(),
-        items: []
+        items: [],
+        seller_id: userData?.user?.id || null
       };
-      const docRef = await addDoc(collection(db, 'sales'), newSale);
-      setActiveSaleId(docRef.id);
+
+      const { data, error } = await supabase
+        .from('sales')
+        .insert(newSale)
+        .select()
+        .single();
+
+      if (error) throw error;
+      if (data) {
+        setActiveSaleId(data.id);
+        await fetchOpenSales();
+      }
     } catch (err) {
       console.error('Error creating sale:', err);
     }
@@ -130,10 +189,16 @@ export default function POS() {
   const deleteSale = async (e: React.MouseEvent, saleId: string) => {
     e.stopPropagation();
     try {
-      await deleteDoc(doc(db, 'sales', saleId));
+      const { error } = await supabase
+        .from('sales')
+        .delete()
+        .eq('id', saleId);
+
+      if (error) throw error;
       if (activeSaleId === saleId) {
         setActiveSaleId(null);
       }
+      await fetchOpenSales();
     } catch (err) {
       console.error('Error deleting sale:', err);
     }
@@ -154,6 +219,7 @@ export default function POS() {
       items.push({
         product_id: product.id,
         product_name: product.name,
+        sku: product.sku || '',
         quantity: 1,
         price: product.sale_price,
         cost: product.cost_price
@@ -164,11 +230,13 @@ export default function POS() {
     const total = subtotal - (activeSale.discount || 0);
 
     try {
-      await updateDoc(doc(db, 'sales', activeSaleId), {
-        items,
-        subtotal,
-        total
-      });
+      const { error } = await supabase
+        .from('sales')
+        .update({ items, subtotal, total })
+        .eq('id', activeSaleId);
+
+      if (error) throw error;
+      await fetchOpenSales();
     } catch (err) {
       console.error('Error adding item:', err);
     }
@@ -185,11 +253,13 @@ export default function POS() {
     const total = subtotal - (activeSale.discount || 0);
 
     try {
-      await updateDoc(doc(db, 'sales', activeSaleId), {
-        items,
-        subtotal,
-        total
-      });
+      const { error } = await supabase
+        .from('sales')
+        .update({ items, subtotal, total })
+        .eq('id', activeSaleId);
+
+      if (error) throw error;
+      await fetchOpenSales();
     } catch (err) {
       console.error('Error removing item:', err);
     }
@@ -200,117 +270,85 @@ export default function POS() {
     const customer = customerId ? customers.find(c => c.id === customerId) : null;
     
     try {
-      await updateDoc(doc(db, 'sales', activeSaleId), {
-        customer_id: customerId,
-        customer_name: customer ? customer.name : 'Público General'
-      });
+      const { error } = await supabase
+        .from('sales')
+        .update({
+          customer_id: customerId,
+          customer_name: customer ? customer.name : 'Público General'
+        })
+        .eq('id', activeSaleId);
+
+      if (error) throw error;
+      await fetchOpenSales();
     } catch (err) {
       console.error('Error updating customer:', err);
     }
   };
 
+  // Cierre de venta atómico en Supabase PostgreSQL
   const closeSale = async () => {
     const activeSale = openSales.find(s => s.id === activeSaleId);
     if (!activeSale || !activeSaleId) return;
 
     const paid = Number(amountPaid) || activeSale.total;
-    const discountVal = Number(discount);
+    const discountVal = Number(discount) || 0;
     const total = activeSale.subtotal - discountVal;
-    const debtAmount = total > paid ? total - paid : 0;
 
+    setProcessingCheckout(true);
     try {
-      const batch = writeBatch(db);
-
-      // 1. Update Sale status
-      const saleRef = doc(db, 'sales', activeSaleId);
-      batch.update(saleRef, {
-        status: 'CLOSED',
-        closed_at: new Date().toISOString(),
-        discount: discountVal,
-        total: total
+      // 1. Invocar RPC close_sale_rpc para atomicidad en PostgreSQL
+      const { data, error } = await supabase.rpc('close_sale_rpc', {
+        p_sale_id: activeSaleId,
+        p_amount_paid: paid,
+        p_payment_method: paymentMethod,
+        p_discount: discountVal,
+        p_total: total
       });
 
-      // 2. Update Product Stock and create Inventory Movements
-      for (const item of activeSale.items) {
-        const productRef = doc(db, 'products', item.product_id);
-        batch.update(productRef, {
-          stock: increment(-item.quantity)
-        });
-
-        const movementRef = doc(collection(db, 'inventory_movements'));
-        batch.set(movementRef, {
-          product_id: item.product_id,
-          type: 'SALE',
-          quantity: -item.quantity,
-          reference_id: activeSaleId,
-          date: new Date().toISOString(),
-          notes: `Venta #${activeSaleId}`
-        });
+      if (error) {
+        console.warn('RPC close_sale_rpc error or function not created yet:', error);
+        throw error;
       }
-
-      // 3. Create Payment
-      const paymentRef = doc(collection(db, 'payments'));
-      batch.set(paymentRef, {
-        sale_id: activeSaleId,
-        amount: paid,
-        method: paymentMethod,
-        date: new Date().toISOString()
-      });
-
-      // 4. Create Debt if needed
-      if (debtAmount > 0 && activeSale.customer_id) {
-        const debtRef = doc(collection(db, 'debts'));
-        batch.set(debtRef, {
-          customer_id: activeSale.customer_id,
-          customer_name: activeSale.customer_name,
-          sale_id: activeSaleId,
-          total_amount: total,
-          remaining_amount: debtAmount,
-          status: 'ACTIVE',
-          created_at: new Date().toISOString()
-        });
-      }
-
-      await batch.commit();
 
       setIsCheckoutOpen(false);
       setAmountPaid('');
       setDiscount('0');
       setActiveSaleId(null);
-    } catch (err) {
+      await Promise.all([
+        fetchOpenSales(),
+        fetchProducts(),
+        fetchCustomers(),
+        fetchLastClosedSale()
+      ]);
+    } catch (err: any) {
       console.error('Error closing sale:', err);
-      alert('Error al cerrar la venta. Por favor intente de nuevo.');
+      alert('Error al cerrar la venta: ' + (err.message || 'Error en la base de datos'));
+    } finally {
+      setProcessingCheckout(false);
     }
   };
 
+  // Revertir / cancelar última venta atómicamente en PostgreSQL
   const handleDeleteLastSale = async () => {
     if (!lastSale) return;
-
-    if (!confirm('¿Está seguro de que desea borrar la última venta? Esto revertirá el stock.')) return;
+    if (!confirm('¿Está seguro de que desea cancelar la última venta? Esto revertirá el stock automáticamente en inventario.')) return;
 
     try {
-      const batch = writeBatch(db);
-
-      // 1. Cancel Sale
-      batch.update(doc(db, 'sales', lastSale.id), {
-        status: 'CANCELLED'
+      const { error } = await supabase.rpc('cancel_sale_rpc', {
+        p_sale_id: lastSale.id
       });
 
-      // 2. Revert Stock
-      for (const item of lastSale.items) {
-        batch.update(doc(db, 'products', item.product_id), {
-          stock: increment(item.quantity)
-        });
-      }
+      if (error) throw error;
 
-      // 3. Delete related payments and debts (simplified: just cancel/mark)
-      // In a real app we might want to find and delete them, but for now let's just revert stock
-      
-      await batch.commit();
       setLastSale(null);
+      await Promise.all([
+        fetchOpenSales(),
+        fetchProducts(),
+        fetchCustomers()
+      ]);
     } catch (err: any) {
-      console.error(err);
-      alert('Error al borrar la venta');
+      console.error('Error cancelling sale:', err);
+      alert('Error al cancelar la venta: ' + (err.message || 'Error en base de datos'));
     }
   };
 
@@ -326,7 +364,7 @@ export default function POS() {
 
   if (loading) {
     return (
-      <div className="h-full flex items-center justify-center">
+      <div className="h-full flex items-center justify-center py-20">
         <Loader2 className="w-10 h-10 text-emerald-500 animate-spin" />
       </div>
     );
@@ -335,23 +373,24 @@ export default function POS() {
   return (
     <div className="h-[calc(100vh-12rem)] flex gap-8 relative">
       {isDayClosed && (
-        <div className="absolute inset-0 z-10 bg-white/60 backdrop-blur-[2px] flex items-center justify-center rounded-[3rem]">
-          <div className="bg-white p-8 rounded-[2.5rem] shadow-2xl border border-gray-100 text-center max-w-md animate-in zoom-in duration-300">
+        <div className="absolute inset-0 z-10 bg-white/70 backdrop-blur-xs flex items-center justify-center rounded-[3rem]">
+          <div className="bg-white p-8 rounded-[2.5rem] shadow-2xl border border-gray-100 text-center max-w-md">
             <div className="w-20 h-20 bg-emerald-50 text-emerald-600 rounded-3xl flex items-center justify-center mx-auto mb-6">
               <Lock className="w-10 h-10" />
             </div>
             <h3 className="text-2xl font-black text-gray-800 mb-2">Caja Cerrada</h3>
-            <p className="text-gray-500 mb-8">El corte del día ya ha sido realizado. No se pueden procesar más ventas hasta el día de mañana.</p>
+            <p className="text-gray-500 mb-8">El corte del día ya ha sido realizado. No se pueden procesar más ventas hasta el próximo turno.</p>
             <button 
-              onClick={() => window.location.reload()}
-              className="w-full py-4 bg-gray-900 text-white rounded-2xl font-bold hover:bg-gray-800 transition-all"
+              onClick={() => checkDayClosing()}
+              className="w-full py-4 bg-gray-900 text-white rounded-2xl font-bold hover:bg-gray-800 transition-all shadow-md"
             >
               Actualizar Estado
             </button>
           </div>
         </div>
       )}
-      {/* Products Selection */}
+
+      {/* Catálogo de Productos */}
       <div className="flex-1 flex flex-col gap-6">
         <div className="relative">
           <Search className="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-gray-400" />
@@ -360,7 +399,7 @@ export default function POS() {
             placeholder="Buscar producto por nombre o SKU..."
             value={searchProduct}
             onChange={(e) => setSearchProduct(e.target.value)}
-            className="w-full pl-12 pr-4 py-4 bg-white border border-gray-200 rounded-2xl shadow-sm outline-none focus:ring-2 focus:ring-emerald-500"
+            className="w-full pl-12 pr-4 py-4 bg-white border border-gray-200 rounded-2xl shadow-sm outline-none focus:ring-2 focus:ring-emerald-500 text-sm"
           />
         </div>
 
@@ -392,9 +431,9 @@ export default function POS() {
         </div>
       </div>
 
-      {/* Cart / Active Sale */}
-      <div className="w-[400px] flex flex-col bg-white rounded-3xl border border-gray-100 shadow-xl overflow-hidden">
-        {/* Sale Tabs */}
+      {/* Carrito / Nota Activa */}
+      <div className="w-[400px] flex flex-col bg-white rounded-3xl border border-gray-100 shadow-xl overflow-hidden shrink-0">
+        {/* Pestañas de notas de venta abiertas */}
         <div className="bg-gray-50 p-2 flex gap-2 overflow-x-auto border-b border-gray-100">
           {openSales.map(sale => (
             <div key={sale.id} className="relative group/tab">
@@ -427,6 +466,7 @@ export default function POS() {
             onClick={() => createNewSale()}
             disabled={isDayClosed}
             className="p-2 text-emerald-600 hover:bg-emerald-50 rounded-xl transition-colors disabled:opacity-50"
+            title="Nueva nota"
           >
             <PlusCircle className="w-5 h-5" />
           </button>
@@ -437,13 +477,13 @@ export default function POS() {
             <div className="p-6 border-b border-gray-50 flex items-center justify-between">
               <div className="flex-1 min-w-0">
                 <div className="flex items-center justify-between">
-                  <h3 className="font-bold text-lg">Nota de Venta #{activeSale.id.slice(-4)}</h3>
+                  <h3 className="font-bold text-lg">Nota #{activeSale.id.slice(-4)}</h3>
                   <button 
                     onClick={(e) => deleteSale(e, activeSale.id)}
                     className="p-2 text-gray-400 hover:text-red-500 hover:bg-red-50 rounded-xl transition-all"
-                    title="Quitar Nota"
+                    title="Eliminar Nota"
                   >
-                    <Trash2 className="w-5 h-5" />
+                    <Trash2 className="w-4 h-4" />
                   </button>
                 </div>
                 <div className="mt-1 relative">
@@ -461,7 +501,7 @@ export default function POS() {
                   </button>
 
                   {isCustomerDropdownOpen && (
-                    <div className="absolute left-0 top-full mt-2 w-64 bg-white rounded-2xl shadow-2xl border border-gray-100 z-50 overflow-hidden animate-in fade-in slide-in-from-top-2 duration-200">
+                    <div className="absolute left-0 top-full mt-2 w-64 bg-white rounded-2xl shadow-2xl border border-gray-100 z-50 overflow-hidden">
                       <div className="p-3 border-b border-gray-50">
                         <div className="relative">
                           <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-3 h-3 text-gray-400" />
@@ -499,11 +539,6 @@ export default function POS() {
                             {activeSale.customer_id === c.id && <Plus className="w-3 h-3" />}
                           </button>
                         ))}
-                        {filteredCustomers.length === 0 && customerSearch && (
-                          <div className="px-4 py-3 text-center text-[10px] text-gray-400">
-                            No se encontraron clientes
-                          </div>
-                        )}
                       </div>
                     </div>
                   )}
@@ -561,7 +596,7 @@ export default function POS() {
                 <button
                   onClick={() => setIsCheckoutOpen(true)}
                   disabled={!activeSale.items || activeSale.items.length === 0 || isDayClosed}
-                  className="px-8 py-4 bg-emerald-600 text-white rounded-2xl font-bold shadow-lg shadow-emerald-600/20 hover:bg-emerald-700 transition-all flex items-center gap-2 disabled:opacity-50"
+                  className="px-8 py-4 bg-emerald-600 text-white rounded-2xl font-bold shadow-lg shadow-emerald-600/20 hover:bg-emerald-700 transition-all flex items-center gap-2 disabled:opacity-50 text-sm"
                 >
                   {isDayClosed ? 'Día Cerrado' : 'Cobrar'}
                   {!isDayClosed && <ArrowRight className="w-5 h-5" />}
@@ -578,7 +613,7 @@ export default function POS() {
             <p className="text-gray-500 text-sm mb-8">Crea una nueva nota para comenzar a registrar productos.</p>
             <button 
               onClick={() => createNewSale()}
-              className="px-6 py-3 bg-emerald-600 text-white rounded-2xl font-bold shadow-lg shadow-emerald-600/20 hover:bg-emerald-700 transition-all"
+              className="px-6 py-3 bg-emerald-600 text-white rounded-2xl font-bold shadow-lg shadow-emerald-600/20 hover:bg-emerald-700 transition-all text-sm"
             >
               Nueva Venta
             </button>
@@ -589,7 +624,7 @@ export default function POS() {
                 <div className="flex justify-between items-center mb-4">
                   <div>
                     <p className="text-sm font-bold text-gray-700">#{lastSale.id.slice(-4)}</p>
-                    <p className="text-xs text-gray-400">{new Date(lastSale.closed_at || '').toLocaleTimeString()}</p>
+                    <p className="text-xs text-gray-400">{new Date(lastSale.closed_at || lastSale.created_at).toLocaleTimeString()}</p>
                   </div>
                   <p className="text-lg font-black text-emerald-600">{formatCurrency(lastSale.total)}</p>
                 </div>
@@ -598,7 +633,7 @@ export default function POS() {
                   className="w-full py-3 bg-white text-red-500 border border-red-100 rounded-xl text-xs font-bold hover:bg-red-50 transition-all flex items-center justify-center gap-2"
                 >
                   <X className="w-4 h-4" />
-                  Borrar esta venta
+                  Cancelar esta venta
                 </button>
               </div>
             )}
@@ -606,7 +641,7 @@ export default function POS() {
         )}
       </div>
 
-      {/* Checkout Modal */}
+      {/* Modal de Cobro */}
       {isCheckoutOpen && (
         <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
           <div className="bg-white w-full max-w-md rounded-3xl shadow-2xl overflow-hidden">
@@ -675,7 +710,7 @@ export default function POS() {
                 </div>
               )}
 
-              {Number(amountPaid) < (activeSale?.total || 0) && Number(amountPaid) > 0 && activeSale?.customer_id && (
+              {Number(amountPaid) < (activeSale?.total || 0) && Number(amountPaid) >= 0 && activeSale?.customer_id && (
                 <div className="p-4 bg-amber-50 rounded-2xl flex items-center justify-between">
                   <span className="text-sm text-amber-700 font-bold">Saldo a Deuda:</span>
                   <span className="text-xl font-black text-amber-700">
@@ -686,9 +721,17 @@ export default function POS() {
 
               <button
                 onClick={closeSale}
-                className="w-full py-4 bg-emerald-600 text-white rounded-2xl font-bold shadow-lg shadow-emerald-600/20 hover:bg-emerald-700 transition-all"
+                disabled={processingCheckout}
+                className="w-full py-4 bg-emerald-600 text-white rounded-2xl font-bold shadow-lg shadow-emerald-600/20 hover:bg-emerald-700 transition-all flex items-center justify-center gap-2"
               >
-                Confirmar y Cerrar Venta
+                {processingCheckout ? (
+                  <>
+                    <Loader2 className="w-5 h-5 animate-spin" />
+                    <span>Procesando en Supabase...</span>
+                  </>
+                ) : (
+                  'Confirmar y Cerrar Venta'
+                )}
               </button>
             </div>
           </div>

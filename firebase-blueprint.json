@@ -1,0 +1,152 @@
+{
+  "entities": {
+    "Customer": {
+      "title": "Customer",
+      "description": "A customer of the business",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string", "description": "Full name of the customer" },
+        "phone": { "type": "string", "description": "Phone number" },
+        "email": { "type": "string", "description": "Email address" },
+        "address": { "type": "string", "description": "Physical address" },
+        "notes": { "type": "string", "description": "Additional notes" },
+        "created_at": { "type": "string", "format": "date-time", "description": "When the customer was created" }
+      },
+      "required": ["name"]
+    },
+    "Product": {
+      "title": "Product",
+      "description": "A product in the inventory",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string", "description": "Product name" },
+        "sku": { "type": "string", "description": "Stock Keeping Unit (unique code)" },
+        "category_id": { "type": "string", "description": "ID of the category" },
+        "sale_price": { "type": "number", "description": "Selling price" },
+        "cost_price": { "type": "number", "description": "Cost price" },
+        "stock": { "type": "number", "description": "Current stock level" },
+        "min_stock": { "type": "number", "description": "Minimum stock level for alerts" },
+        "unit": { "type": "string", "description": "Unit of measure (e.g., piece, kg)" },
+        "description": { "type": "string", "description": "Product description" },
+        "active": { "type": "boolean", "description": "Whether the product is active" }
+      },
+      "required": ["name", "sale_price", "cost_price"]
+    },
+    "Category": {
+      "title": "Category",
+      "description": "Product category",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string", "description": "Category name" }
+      },
+      "required": ["name"]
+    },
+    "Sale": {
+      "title": "Sale",
+      "description": "A sales transaction",
+      "type": "object",
+      "properties": {
+        "customer_id": { "type": "string", "description": "ID of the customer" },
+        "total": { "type": "number", "description": "Total amount" },
+        "subtotal": { "type": "number", "description": "Subtotal amount" },
+        "discount": { "type": "number", "description": "Discount applied" },
+        "status": { "type": "string", "enum": ["OPEN", "CLOSED", "CANCELLED"], "description": "Sale status" },
+        "created_at": { "type": "string", "format": "date-time", "description": "Creation time" },
+        "closed_at": { "type": "string", "format": "date-time", "description": "Closing time" }
+      },
+      "required": ["status"]
+    },
+    "SaleItem": {
+      "title": "SaleItem",
+      "description": "An item within a sale",
+      "type": "object",
+      "properties": {
+        "sale_id": { "type": "string", "description": "ID of the sale" },
+        "product_id": { "type": "string", "description": "ID of the product" },
+        "quantity": { "type": "number", "description": "Quantity sold" },
+        "price": { "type": "number", "description": "Price at time of sale" },
+        "cost": { "type": "number", "description": "Cost at time of sale" }
+      },
+      "required": ["sale_id", "product_id", "quantity", "price"]
+    },
+    "Debt": {
+      "title": "Debt",
+      "description": "A customer debt",
+      "type": "object",
+      "properties": {
+        "customer_id": { "type": "string", "description": "ID of the customer" },
+        "sale_id": { "type": "string", "description": "ID of the sale" },
+        "total_amount": { "type": "number", "description": "Total debt amount" },
+        "remaining_amount": { "type": "number", "description": "Remaining debt amount" },
+        "status": { "type": "string", "enum": ["ACTIVE", "PAID", "CANCELLED"], "description": "Debt status" },
+        "created_at": { "type": "string", "format": "date-time", "description": "Creation time" }
+      },
+      "required": ["customer_id", "sale_id", "total_amount", "remaining_amount"]
+    },
+    "Payment": {
+      "title": "Payment",
+      "description": "A payment record",
+      "type": "object",
+      "properties": {
+        "sale_id": { "type": "string", "description": "ID of the sale" },
+        "debt_id": { "type": "string", "description": "ID of the debt" },
+        "amount": { "type": "number", "description": "Payment amount" },
+        "method": { "type": "string", "enum": ["CASH", "CARD", "TRANSFER"], "description": "Payment method" },
+        "type": { "type": "string", "enum": ["SALE", "DEBT"], "description": "Payment type" },
+        "created_at": { "type": "string", "format": "date-time", "description": "Payment time" }
+      },
+      "required": ["amount", "method", "type"]
+    },
+    "Expense": {
+      "title": "Expense",
+      "description": "A business expense",
+      "type": "object",
+      "properties": {
+        "description": { "type": "string", "description": "Expense description" },
+        "amount": { "type": "number", "description": "Expense amount" },
+        "category": { "type": "string", "description": "Expense category" },
+        "date": { "type": "string", "format": "date-time", "description": "Expense date" }
+      },
+      "required": ["amount", "description"]
+    },
+    "DailyClosing": {
+      "title": "DailyClosing",
+      "description": "A daily financial closing",
+      "type": "object",
+      "properties": {
+        "date": { "type": "string", "description": "Date of closing (YYYY-MM-DD)" },
+        "reinvestment_percent": { "type": "number", "description": "Reinvestment percentage" },
+        "expected_cash": { "type": "number", "description": "Expected cash in drawer" },
+        "physical_cash": { "type": "number", "description": "Actual physical cash" },
+        "discrepancy": { "type": "number", "description": "Difference between expected and physical" },
+        "closed": { "type": "boolean", "description": "Whether the day is closed" }
+      },
+      "required": ["date", "closed"]
+    },
+    "InventoryMovement": {
+      "title": "InventoryMovement",
+      "description": "A record of stock change",
+      "type": "object",
+      "properties": {
+        "product_id": { "type": "string", "description": "ID of the product" },
+        "type": { "type": "string", "enum": ["IN", "OUT", "ADJUST"], "description": "Movement type" },
+        "quantity": { "type": "number", "description": "Quantity moved" },
+        "reason": { "type": "string", "description": "Reason for movement" },
+        "created_at": { "type": "string", "format": "date-time", "description": "Time of movement" }
+      },
+      "required": ["product_id", "type", "quantity"]
+    }
+  },
+  "firestore": {
+    "/customers": { "schema": "Customer", "description": "Customers collection" },
+    "/products": { "schema": "Product", "description": "Products collection" },
+    "/categories": { "schema": "Category", "description": "Categories collection" },
+    "/sales": { "schema": "Sale", "description": "Sales collection" },
+    "/sale_items": { "schema": "SaleItem", "description": "Sale items collection" },
+    "/debts": { "schema": "Debt", "description": "Debts collection" },
+    "/payments": { "schema": "Payment", "description": "Payments collection" },
+    "/expenses": { "schema": "Expense", "description": "Expenses collection" },
+    "/daily_closings": { "schema": "DailyClosing", "description": "Daily closings collection" },
+    "/inventory_movements": { "schema": "InventoryMovement", "description": "Inventory movements collection" }
+  }
+}

@@ -1,0 +1,6 @@
+{
+  "name": "KAS SPORT - Punto de Venta e Inventario",
+  "description": "Sistema integral de gestión de negocios con control de inventario, ventas, clientes, deudas y reportes financieros.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
